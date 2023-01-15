@@ -87,7 +87,7 @@ def sample():
             out.append(ix)
             if ix == 0:
                 break
-        print("".join(i2s[i] for i in out))
+        print("".join(i2s[i] for i in out[:-1]))
 sample()
 validate()
 # training, validation, test
