@@ -15,13 +15,11 @@ g = torch.Generator().manual_seed(2147483647)
 def build_dataset(words):
     X, Y = [], []
     for w in words:
-        #print(w)
         context = [0] * block_size
         for ch in w + ".":
             ix = s2i[ch]
             X.append(context)
             Y.append(ix)
-            #print(''.join(i2s[i] for i in context), "--->", i2s[ix])
             context = context[1:] + [ix]
     X = torch.tensor(X)
     Y = torch.tensor(Y)
@@ -100,13 +98,12 @@ layers = [
     Linear(n_hidden, n_hidden), BatchNorm1d(n_hidden), Tanh(),
     Linear(n_hidden, n_hidden), BatchNorm1d(n_hidden), Tanh(),
     Linear(n_hidden, n_hidden), BatchNorm1d(n_hidden), Tanh(),
-    Linear(n_hidden, vocab_size),
+    Linear(n_hidden, vocab_size), BatchNorm1d(vocab_size),
 ]
 
 with torch.no_grad():
-    layers[-1].weight *= 0.1
-    #layers[-1].gamma *= 0.1
-    for layer in layers:
+    layers[-1].gamma *= 0.1
+    for layer in layers[:-1]:
         if isinstance(layer, Linear):
             layer.weight *= 5/3
     
@@ -158,6 +155,8 @@ def split_loss(split):
     loss = F.cross_entropy(x, y)
     print(split, loss.item())
 
+for layer in layers:
+  layer.training = False
 
 def sample():
     for _ in range(20):
