@@ -157,111 +157,147 @@ for t in [logprobs, probs, counts, counts_sum, counts_sum_inv, norm_logits,
 loss.backward()
 loss
 
-dlogprobs = torch.zeros_like(logprobs)
-dlogprobs[range(n), Yb] = -1.0/n
-dprobs = (1/probs) * dlogprobs
-dcounts_sum_inv = (counts * dprobs).sum(1, keepdim=True)
-dcounts = counts_sum_inv * dprobs
-dcounts_sum = (-counts_sum**-2) * dcounts_sum_inv
-dcounts += torch.ones_like(counts) * dcounts_sum
-dnorm_logits = counts * dcounts
-dlogits = dnorm_logits.clone()
-dlogit_maxes = (-dnorm_logits).sum(1, keepdim=True)
-dlogits += F.one_hot(logits.max(1).indices, num_classes=logits.shape[1]) * dlogit_maxes
-dh = dlogits @ W2.T
-dW2 = h.T @ dlogits
-db2 = dlogits.sum(0)
-dhpreact = (1.0 - h**2) * dh
-dbnraw = bngain * dhpreact
-dbngain = (bnraw * dhpreact).sum(0, keepdim=True)
-dbnraw = bngain * dhpreact
-dbnbias = dhpreact.sum(0, keepdim=True)
-dbndiff = bnvar_inv * dbnraw
-dbnvar_inv = (bndiff * dbnraw).sum(0, keepdim=True)
-dbnvar = (-0.5*(bnvar + 1e-5)**-1.5) * dbnvar_inv
-dbndiff2 = (1.0/(n-1))*torch.ones_like(bndiff2) * dbnvar
-dbndiff += (2*bndiff) * dbndiff2
-dhprebn = dbndiff.clone()
-dbnmeani = (-dbndiff).sum(0)
-dhprebn += 1.0/n * (torch.ones_like(hprebn) * dbnmeani)
-dembcat = dhprebn @ W1.T
-dW1 = embcat.T @ dhprebn
-db1 = dhprebn.sum(0)
-demb = dembcat.view(emb.shape)
-dC = torch.zeros_like(C)
-for k in range(Xb.shape[0]):
-    for j in range(Xb.shape[1]):
-        ix = Xb[k, j]
-        dC[ix] += demb[k, j]
-cmp('logprobs', dlogprobs, logprobs)
-cmp('probs', dprobs, probs)
-cmp('counts_sum_inv', dcounts_sum_inv, counts_sum_inv)
-cmp('counts_sum', dcounts_sum, counts_sum)
-cmp('counts', dcounts, counts)
-cmp('norm_logits', dnorm_logits, norm_logits)
-cmp('logit_maxes', dlogit_maxes, logit_maxes)
-cmp('logits', dlogits, logits)
-cmp('h', dh, h)
-cmp('W2', dW2, W2)
-cmp('b2', db2, b2)
-cmp('hpreact', dhpreact, hpreact)
-cmp('bngain', dbngain, bngain)
-cmp('bnbias', dbnbias, bnbias)
-cmp('bnraw', dbnraw, bnraw)
-cmp('bnvar_inv', dbnvar_inv, bnvar_inv)
-cmp('bnvar', dbnvar, bnvar)
-cmp('bndiff2', dbndiff2, bndiff2)
-cmp('bndiff', dbndiff, bndiff)
-cmp('bnmeani', dbnmeani, bnmeani)
-cmp('hprebn', dhprebn, hprebn)
-cmp('embcat', dembcat, embcat)
-cmp('W1', dW1, W1)
-cmp('b1', db1, b1)
-cmp('emb', demb, emb)
-cmp('C', dC, C)
+for p in parameters:
+  p.requires_grad = True
+max_steps = 100000
+batch_size = 32
+n = batch_size # convenience
+lossi = []
 
-# @torch.no_grad()
-# def split_loss(split):
-#     x,y = {
-#     'train': (Xtr, Ytr),
-#     'val': (Xdev, Ydev),
-#     'test': (Xte, Yte),
-#     }[split]
+# use this context manager for efficiency once your backward pass is written (TODO)
+#with torch.no_grad():
 
-#     emb = C[x] # (N, block_size, n_embd)
-#     x = emb.view(emb.shape[0], -1) # concat into (N, block_size * n_embd)
-#     for layer in layers:
-#         x = layer(x)
-#     loss = F.cross_entropy(x, y)
-#     print(split, loss.item())
+# kick off optimization
+for i in range(max_steps):
+
+    # minibatch construct
+    ix = torch.randint(0, Xtr.shape[0], (batch_size,), generator=g)
+    Xb, Yb = Xtr[ix], Ytr[ix] # batch X,Y
+
+    # forward pass
+    emb = C[Xb] # embed the characters into vectors
+    embcat = emb.view(emb.shape[0], -1) # concatenate the vectors
+    # Linear layer
+    hprebn = embcat @ W1 + b1 # hidden layer pre-activation
+    # BatchNorm layer
+    # -------------------------------------------------------------
+    bnmean = hprebn.mean(0, keepdim=True)
+    bnvar = hprebn.var(0, keepdim=True, unbiased=True)
+    bnvar_inv = (bnvar + 1e-5)**-0.5
+    bnraw = (hprebn - bnmean) * bnvar_inv
+    hpreact = bngain * bnraw + bnbias
+    # -------------------------------------------------------------
+    # Non-linearity
+    h = torch.tanh(hpreact) # hidden layer
+    logits = h @ W2 + b2 # output layer
+    loss = F.cross_entropy(logits, Yb) # loss function
+
+    # backward pass
+    for p in parameters:
+        p.grad = None
+    loss.backward() # use this for correctness comparisons, delete it later!
+
+    dlogprobs = torch.zeros_like(logprobs)
+    dlogprobs[range(n), Yb] = -1.0/n
+    dprobs = (1/probs) * dlogprobs
+    dcounts_sum_inv = (counts * dprobs).sum(1, keepdim=True)
+    dcounts = counts_sum_inv * dprobs
+    dcounts_sum = (-counts_sum**-2) * dcounts_sum_inv
+    dcounts += torch.ones_like(counts) * dcounts_sum
+    dnorm_logits = counts * dcounts
+    dlogits = dnorm_logits.clone()
+    dlogit_maxes = (-dnorm_logits).sum(1, keepdim=True)
+    dlogits += F.one_hot(logits.max(1).indices, num_classes=logits.shape[1]) * dlogit_maxes
+    dh = dlogits @ W2.T
+    dW2 = h.T @ dlogits
+    db2 = dlogits.sum(0)
+    dhpreact = (1.0 - h**2) * dh
+    dbnraw = bngain * dhpreact
+    dbngain = (bnraw * dhpreact).sum(0, keepdim=True)
+    dbnraw = bngain * dhpreact
+    dbnbias = dhpreact.sum(0, keepdim=True)
+    dbndiff = bnvar_inv * dbnraw
+    dbnvar_inv = (bndiff * dbnraw).sum(0, keepdim=True)
+    dbnvar = (-0.5*(bnvar + 1e-5)**-1.5) * dbnvar_inv
+    dbndiff2 = (1.0/(n-1))*torch.ones_like(bndiff2) * dbnvar
+    dbndiff += (2*bndiff) * dbndiff2
+    dhprebn = dbndiff.clone()
+    dbnmeani = (-dbndiff).sum(0)
+    dhprebn += 1.0/n * (torch.ones_like(hprebn) * dbnmeani)
+    dembcat = dhprebn @ W1.T
+    dW1 = embcat.T @ dhprebn
+    db1 = dhprebn.sum(0)
+    demb = dembcat.view(emb.shape)
+    dC = torch.zeros_like(C)
+    for k in range(Xb.shape[0]):
+        for j in range(Xb.shape[1]):
+            ix = Xb[k, j]
+            dC[ix] += demb[k, j]
+    grads = [dC, dW1, db1, dW2, db2, dbngain, dbnbias]
+
+    dC, dW1, db1, dW2, db2, dbngain, dbnbias = None, None, None, None, None, None, None
+    grads = [dC, dW1, db1, dW2, db2, dbngain, dbnbias]
+    # -----------------
+
+    # update
+    lr = 0.1 if i < 100000 else 0.01 # step learning rate decay
+    for p, grad in zip(parameters, grads):
+        p.data += -lr * p.grad # old way of cheems doge (using PyTorch grad from .backward())
+
+
+with torch.no_grad():
+  # pass the training set through
+  emb = C[Xtr]
+  embcat = emb.view(emb.shape[0], -1)
+  hpreact = embcat @ W1 + b1
+  # measure the mean/std over the entire training set
+  bnmean = hpreact.mean(0, keepdim=True)
+  bnvar = hpreact.var(0, keepdim=True, unbiased=True)
+
+@torch.no_grad()
+def split_loss(split):
+    x,y = {
+    'train': (Xtr, Ytr),
+    'val': (Xdev, Ydev),
+    'test': (Xte, Yte),
+    }[split]
+    emb = C[x] # (N, block_size, n_embd)
+    embcat = emb.view(emb.shape[0], -1) # concat into (N, block_size * n_embd)
+    hpreact = embcat @ W1 + b1
+    hpreact = bngain * (hpreact - bnmean) * (bnvar + 1e-5)**-0.5 + bnbias
+    h = torch.tanh(hpreact) # (N, n_hidden)
+    logits = h @ W2 + b2 # (N, vocab_size)
+    loss = F.cross_entropy(logits, y)
+    print(split, loss.item())
 
 # for layer in layers:
 #   layer.training = False
 
-# def sample():
-#     for _ in range(20):
-#         out = []
-#         context = [0] * block_size # initialize with all ...
-#         while True:
-#             # forward pass the neural net
-#             emb = C[torch.tensor([context])] # (1,block_size,n_embd)
-#             x = emb.view(emb.shape[0], -1) # concatenate the vectors
-#             for layer in layers:
-#                 x = layer(x)
-#             logits = x
-#             probs = F.softmax(logits, dim=1)
-#             # sample from the distribution
-#             ix = torch.multinomial(probs, num_samples=1, generator=g).item()
-#             # shift the context window and track the samples
-#             context = context[1:] + [ix]
-#             out.append(ix)
-#             # if we sample the special '.' token, break
-#             if ix == 0:
-#                 break
-#         print("".join(i2s[i] for i in out[:-1]))
+def sample():
+    for _ in range(20):
+    
+        out = []
+        context = [0] * block_size # initialize with all ...
+        while True:
+            # forward pass
+            emb = C[torch.tensor([context])] # (1,block_size,d)      
+            embcat = emb.view(emb.shape[0], -1) # concat into (N, block_size * n_embd)
+            hpreact = embcat @ W1 + b1
+            hpreact = bngain * (hpreact - bnmean) * (bnvar + 1e-5)**-0.5 + bnbias
+            h = torch.tanh(hpreact) # (N, n_hidden)
+            logits = h @ W2 + b2 # (N, vocab_size)
+            # sample
+            probs = F.softmax(logits, dim=1)
+            ix = torch.multinomial(probs, num_samples=1, generator=g).item()
+            context = context[1:] + [ix]
+            out.append(ix)
+            if ix == 0:
+                break
 
-# sample()
-# split_loss("train")
-# split_loss("val")
+        print(''.join(i2s[i] for i in out))
+
+sample()
+split_loss("train")
+split_loss("val")
 # training, validation, test
 # 80%, 10%, 10%
